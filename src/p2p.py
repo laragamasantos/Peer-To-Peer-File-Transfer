@@ -1,21 +1,23 @@
 import socket
 import threading
 import time
+import json
 
 class Peer:
-    def __init__(self, host, port, id):
+    def __init__(self, host, port, id, datas={}):
         self.host = host
         self.port = port
         self.id = id
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections = []
-        self.datas = {}
+        self.datas = datas
 
     def connect(self, peer_host, peer_port):
         connection = socket.create_connection((peer_host, peer_port))
-
         self.connections.append(connection)
         print(f"Connected to {peer_host}:{peer_port}")
+        threading.Thread(target=self.handle_client, args=(connection, (peer_host, peer_port))).start()
+
 
     def listen(self):
         self.socket.bind((self.host, self.port))
@@ -36,61 +38,81 @@ class Peer:
                 "content": self.datas[data_id]
             }
             
-            connection.sendall(request.encode())
+            request = json.dumps(request)
+            
+            connection.sendall((request + "\n").encode())
         except socket.error as e:
             print(f"Failed to send data. Error: {e}")
             self.connections.remove(connection)
 
     def handle_client(self, connection, address):
+        buffer = ""
         while True:
             try:
-                data = connection.recv(1024)
-                if not data:
+                chunk = connection.recv(1024)
+                if not chunk:
                     break
-                
-                if data["type"] == "request":
-                    data_id = data["data_id"]
-                    if data_id in self.datas:
-                        self.send_data(data_id, connection)
-                else:
-                    self.datas[data_id] = data["content"]
-                    
-                    print(f"{self.id} - Received data from {address}: {data.decode()}")
-            except socket.error:
+
+                buffer += chunk.decode()
+
+                # Processa todas as mensagens completas no buffer
+                while "\n" in buffer:
+                    msg, buffer = buffer.split("\n", 1)
+                    if not msg.strip():
+                        continue
+
+                    data = json.loads(msg)
+
+                    # Trata mensagens recebidas
+                    if data["type"] == "request":
+                        data_id = data["data_id"]
+                        if data_id in self.datas:
+                            self.send_data(data_id, connection)
+
+                    elif data["type"] == "send":
+                        data_id = data["id"]
+                        self.datas[data_id] = data["content"]
+                        print(f"{self.id} - Received data {data_id} from {address}: '{data['content']}'")
+
+            except (socket.error, json.JSONDecodeError) as e:
                 break
 
         print(f"Connection from {address} closed.")
-        self.connections.remove(connection)
+        if connection in self.connections:
+            self.connections.remove(connection)
         connection.close()
+
 
     def start(self):
         listen_thread = threading.Thread(target=self.listen)
         listen_thread.start()
         
     def request_data(self, data_id):
-        print(f"Requesting data {data_id} from peer.")
+        print(f"Requesting data {data_id} from peers.")
         request = {
             "type": "request",
             "data_id": data_id
         }
         
+        request = json.dumps(request)
+        
         for connection in self.connections:
-            connection.sendall(request.encode())
+            connection.sendall((request + "\n").encode())
 
 # Example usage:
 if __name__ == "__main__":
-    peers = {
-        "A": Peer("0.0.0.0", 8001, "A"),
-        "B": Peer("0.0.0.0", 8002, "B"),
-        "C": Peer("0.0.0.0", 8003, "C"),
-        "D": Peer("0.0.0.0", 8004, "D"),
-    }
-    
     datas = {
         1: "Mensagem 1",
         2: "Mensagem 2",
         3: "Mensagem 3",
         4: "Mensagem 4",
+    }
+    
+    peers = {
+        "A": Peer("0.0.0.0", 8001, "A"),
+        "B": Peer("0.0.0.0", 8002, "B", ({1: datas[1]})),
+        "C": Peer("0.0.0.0", 8003, "C"),
+        "D": Peer("0.0.0.0", 8004, "D"),
     }
     
     for peer in peers.values():
@@ -102,12 +124,20 @@ if __name__ == "__main__":
         for otherPeer in peers.values():
             if peer.id != otherPeer.id:
                 peer.connect("127.0.0.1", otherPeer.port)
-                time.sleep(1)
-    
-    peers["B"].datas = {1: datas[1]}
-    
+                time.sleep(0.1)
+                
+    for peer in peers.values():
+        print(f"Peer ID: {peer.id} - {peer.datas}")
+        
     while True:
         peer_id = input("Digite o id do Peer para receber a mensagem: ")
+        
+        if peer_id == "0":
+            break
+        
         data_id = int(input("Qual o id da mensagem: "))
         
         peers[peer_id].request_data(data_id)
+        
+    for peer in peers.values():
+        print(f"Peer ID: {peer.id} - {peer.datas}")
