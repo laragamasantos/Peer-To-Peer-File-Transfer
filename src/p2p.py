@@ -2,69 +2,72 @@ import socket
 import threading
 import time
 import json
+import base64
+import os
 
 class Peer:
-    def __init__(self, host, port, id, datas=None):
+    def __init__(self, host, port, id):
         self.host = host
         self.port = port
         self.id = id
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections = []
 
-        if datas is None:
-            self.datas = {}
-        else:
-            self.datas = datas
+        # Diretório base de arquivos deste peer
+        self.base_dir = os.path.join(os.path.dirname(__file__), "..", "files", self.id)
+        os.makedirs(self.base_dir, exist_ok=True)
 
     def connect(self, peer_host, peer_port):
         connection = socket.create_connection((peer_host, peer_port))
         self.connections.append(connection)
-        # print(f"Connected to {peer_host}:{peer_port}")
         threading.Thread(target=self.handle_client, args=(connection, (peer_host, peer_port)), daemon=True).start()
-
 
     def listen(self):
         self.socket.bind((self.host, self.port))
         self.socket.listen(10)
-        # print(f"Listening for connections on {self.host}:{self.port}")
-
         while True:
             connection, address = self.socket.accept()
             self.connections.append(connection)
-            # print(f"Accepted connection from {address}")
             threading.Thread(target=self.handle_client, args=(connection, address), daemon=True).start()
 
-    def send_data(self, data_id, requester_id, connection):
+    # 🔹 Envia arquivo (busca dentro da pasta /files/<peer_id>)
+    def send_file(self, file_name, requester_id, connection):
         try:
-            request = {
-                "type": "send",
-                "data_id": data_id, 
-                "content": self.datas[data_id],
+            file_path = os.path.join(self.base_dir, file_name)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"{file_path} not found")
+
+            with open(file_path, "rb") as f:
+                encoded = base64.b64encode(f.read()).decode("utf-8")
+
+            message = {
+                "type": "send_file",
+                "file_name": file_name,
+                "file_content": encoded,
                 "requester_id": requester_id,
                 "sender_id": self.id
             }
-            
-            request = json.dumps(request)
-            
-            connection.sendall((request + "\n").encode())
-            print(f"{self.id} - Send data {data_id} to {requester_id}")
-        except socket.error as e:
-            print(f"Failed to send data. Error: {e}")
-            self.connections.remove(connection)
-            
-    def request_data(self, data_id):
-        print(f"Requesting data {data_id} from peers.")
-        request = {
-            "type": "request",
-            "data_id": data_id,
+
+            connection.sendall((json.dumps(message) + "\n").encode())
+            print(f"{self.id} - Sent file '{file_name}' to {requester_id}")
+
+        except Exception as e:
+            print(f"{self.id} - Failed to send file '{file_name}': {e}")
+            if connection in self.connections:
+                self.connections.remove(connection)
+
+    # 🔹 Solicita arquivo de outros peers
+    def request_file(self, file_name):
+        print(f"{self.id} - Requesting file '{file_name}' from peers.")
+        message = {
+            "type": "request_file",
+            "file_name": file_name,
             "requester_id": self.id
         }
-        
-        request = json.dumps(request)
-        
         for connection in self.connections:
-            connection.sendall((request + "\n").encode())
+            connection.sendall((json.dumps(message) + "\n").encode())
 
+    # 🔹 Trata mensagens recebidas
     def handle_client(self, connection, address):
         buffer = ""
         while True:
@@ -75,25 +78,31 @@ class Peer:
 
                 buffer += chunk.decode()
 
-                # Processa todas as mensagens completas no buffer
                 while "\n" in buffer:
                     msg, buffer = buffer.split("\n", 1)
                     if not msg.strip():
                         continue
 
                     data = json.loads(msg)
-                    
-                    data_id = data["data_id"]
-                    # Trata mensagens recebidas
-                    if data["type"] == "request":
-                        if data_id in self.datas:
-                            self.send_data(data_id, data["requester_id"], connection)
-                    
-                    elif (data["type"] == "send") and (data["requester_id"] == self.id) and (data_id not in self.datas):          
-                        self.datas[data_id] = data["content"]
-                        print(f"{self.id} - Received data {data['data_id']} from {data['sender_id']}: '{data['content']}'")
 
-            except (socket.error, json.JSONDecodeError) as e:
+                    # --- Pedido de arquivo ---
+                    if data["type"] == "request_file":
+                        file_name = data["file_name"]
+                        self.send_file(file_name, data["requester_id"], connection)
+
+                    # --- Recebimento de arquivo ---
+                    elif data["type"] == "send_file" and data["requester_id"] == self.id:
+                        file_name = data["file_name"]
+                        file_bytes = base64.b64decode(data["file_content"])
+                        try:
+                            save_path = os.path.join(self.base_dir, file_name)
+                            with open(save_path, "wb") as f:
+                                f.write(file_bytes)
+                            print(f"{self.id} - Received '{file_name}' from {data['sender_id']} (saved to {save_path})")
+                        except Exception as e:
+                            print(f"{self.id} - Error saving file '{file_name}': {e}")
+
+            except (socket.error, json.JSONDecodeError):
                 break
 
         print(f"Connection from {address} closed.")
@@ -101,52 +110,36 @@ class Peer:
             self.connections.remove(connection)
         connection.close()
 
-
     def start(self):
-        listen_thread = threading.Thread(target=self.listen, daemon=True)
-        listen_thread.start()
+        threading.Thread(target=self.listen, daemon=True).start()
 
+
+# --- Execução principal ---
 if __name__ == "__main__":
-    datas = {
-        1: "Mensagem 1",
-        2: "Mensagem 2",
-        3: "Mensagem 3",
-        4: "Mensagem 4",
-    }
-    
     peers = {
         "A": Peer("0.0.0.0", 8001, "A"),
-        "B": Peer("0.0.0.0", 8002, "B", ({1: datas[1]})),
+        "B": Peer("0.0.0.0", 8002, "B"),
         "C": Peer("0.0.0.0", 8003, "C"),
         "D": Peer("0.0.0.0", 8004, "D"),
     }
-    
+
     for peer in peers.values():
         peer.start()
-    
-    time.sleep(2)    
-      
-    for peer in peers.values():
-        for otherPeer in peers.values():
-            if peer.port < otherPeer.port:
-                peer.connect("127.0.0.1", otherPeer.port)
+
+    time.sleep(2)
+
+    for p in peers.values():
+        for other in peers.values():
+            if p.port < other.port:
+                p.connect("127.0.0.1", other.port)
                 time.sleep(0.1)
-                
-    print("Estado inicial:")
-    for peer in peers.values():
-        print(f"Peer ID: {peer.id} - {peer.datas}")
-        
+
+    print("Rede inicializada.\n")
+
     while True:
-        peer_id = input("Digite o id do Peer para receber a mensagem: ")
-        
+        peer_id = input("Peer que vai solicitar o arquivo (A/B/C/D ou 0 para sair): ")
         if peer_id == "0":
             break
-        
-        data_id = int(input("Qual o id da mensagem: "))
-        
-        peers[peer_id].request_data(data_id)
-        
-        print("\nEstado atual:")
-        for peer in peers.values():
-            print(f"Peer ID: {peer.id} - {peer.datas}")
-        print("\n")
+        file_name = input("Nome do arquivo (ex: teste.txt): ")
+        peers[peer_id].request_file(file_name)
+        print()
