@@ -181,13 +181,55 @@ class Peer:
         listen_thread = threading.Thread(target=self.listen, daemon=True)
         listen_thread.start()
 
-if __name__ == "__main__":
+def create_files(name, size):
+    path = os.path.join("files/A", name)
+
+    content = os.urandom(size)
+
+    with open(path, "wb") as f:
+        f.write(content)
+
+    """ metadata = {
+        "filename": name,
+        "uuid": str(uuid.uuid4()),
+        "size_bytes": len(content)
+    } """
+
+def generate_test_2_peers():
+    peers = {
+        "A": Peer("0.0.0.0", 8001, "A"),
+        "B": Peer("0.0.0.0", 8002, "B"),
+    }
+
+    create_files("pequeno", 10 * 1024)
+    create_files("medio", 1024 * 1024)
+    create_files("grande", 10 * 1024 * 1024)
+
+    return peers
+
+def generate_test_4_peers():
     peers = {
         "A": Peer("0.0.0.0", 8001, "A"),
         "B": Peer("0.0.0.0", 8002, "B"),
         "C": Peer("0.0.0.0", 8003, "C"),
-        "D": Peer("0.0.0.0", 8004, "D"),
+        "D": Peer("0.0.0.0", 8004, "D")
     }
+
+    create_files("pequeno", 20 * 1024)
+    create_files("medio", 5 * 1024 * 1024)
+    create_files("grande", 20 * 1024 * 1024)
+
+    return peers
+
+if __name__ == "__main__":
+    test_id = input("Digite 2 para executar o teste com 2 peers ou 4 para executar o teste com 4 peers: ")
+    
+    if (test_id == "2"):
+        peers = generate_test_2_peers()
+    else:
+        if (test_id != "4"):
+            print("Inválido. Assumindo teste com 4 peers.")
+        peers = generate_test_4_peers()
 
     for peer in peers.values():
         peer.start()
@@ -202,5 +244,5 @@ if __name__ == "__main__":
                 
     while True:
         peer_id = input("Digite o id do Peer que vai fazer a requisição: ")
-        file_name = input("Qual o nome do arquivo: ")
+        file_name = input("Qual o nome do arquivo (pequeno, medio ou grande): ")
         peers[peer_id].request_data(file_name)
